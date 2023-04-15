@@ -23,6 +23,7 @@ struct package{
 	size_t len;
 };
 
+/*comparator for qsort*/
 int comparator(const void *ip1, const void *ip2){
 	
 	struct route_table_entry *re1 = (struct route_table_entry*) ip1;
@@ -39,15 +40,17 @@ int comparator(const void *ip1, const void *ip2){
 		return (ntohl(prefix1 & mask1) - ntohl(prefix2 & mask2));
 }
 
-struct arp_entry *get_arp_entry(uint32_t ip){
-	
-	for(int i = 0; i < arptable_size; i++){
-		if(arptable[i].ip == ip)
-			return &arptable[i];
-	}
-	return NULL;
-}
 
+// struct arp_entry *get_arp_entry(uint32_t ip){
+	
+// 	for(int i = 0; i < arptable_size; i++){
+// 		if(arptable[i].ip == ip)
+// 			return &arptable[i];
+// 	}
+// 	return NULL;
+// }
+
+/*searches through the arp table for the ip*/
 struct arp_entry *get_arp_cache(uint32_t ip){
 	
 	for(int i = 0; i < arp_cache_size; i++){
@@ -57,6 +60,7 @@ struct arp_entry *get_arp_cache(uint32_t ip){
 	return NULL;
 }
 
+/*binary search through the routing table to find the next hop with the biggest mask*/
 struct route_table_entry *bsearch_table(uint32_t daddr){
 	
 	int sf = rtable_size - 1;
@@ -90,6 +94,7 @@ struct route_table_entry *bsearch_table(uint32_t daddr){
 			return NULL;
 }
 
+/*sends icmp messages*/
 void icmp(struct ether_header *eth_hdr, struct iphdr *ip_hdr, int type, int interface){
 	
 	printf("Entered icmp\n");
@@ -123,6 +128,7 @@ void icmp(struct ether_header *eth_hdr, struct iphdr *ip_hdr, int type, int inte
 	send_to_link(interface, buf, sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct icmphdr) + 64);
 }
 
+/*sends arp requests in case the "next route" is not in the arp table*/
 void arprequest(struct route_table_entry *next_route, int interface){
 	
 	char buffer[sizeof(struct ether_header) + sizeof(struct arp_header)];
@@ -154,7 +160,7 @@ void arprequest(struct route_table_entry *next_route, int interface){
 	send_to_link(next_route->interface, buffer, sizeof(struct ether_header) + sizeof(struct arp_header));
 }
 
-
+/*parses ip packets*/
 void ippacket(struct iphdr *ip_packet, struct ether_header *eth_hdr, char* buf, int interface){
 	
 	uint16_t prev_checksum  = ip_packet->check;
@@ -164,6 +170,8 @@ void ippacket(struct iphdr *ip_packet, struct ether_header *eth_hdr, char* buf, 
 	uint32_t ip = inet_addr(get_interface_ip(interface));
 	struct icmphdr *icmp_hdr = (struct icmphdr*)(buf + sizeof(struct ether_header) + sizeof(struct iphdr));			
 	printf("Type is %d\n", icmp_hdr->type);
+	
+	/*if the router is the destination for an echo request it will reply with an echo reply*/
 	if(ip_packet->daddr == ip)
 	{
 		if(ip_packet->protocol == 1){
@@ -175,9 +183,11 @@ void ippacket(struct iphdr *ip_packet, struct ether_header *eth_hdr, char* buf, 
 		return;
 	}
 
+	/*throw the packet if the checksum is wrong*/
 	if(prev_checksum != ip_packet->check)
 		return;
 
+	/*throw the packet if the ttl is 0 or 1*/
 	if(ip_packet->ttl <= 1){
 		icmp(eth_hdr, ip_packet, 11, interface);
 		return;
@@ -185,10 +195,13 @@ void ippacket(struct iphdr *ip_packet, struct ether_header *eth_hdr, char* buf, 
 
 	
 	struct route_table_entry *next_route = bsearch_table(ip_packet->daddr);
+	
+	/*if there is no route to the destination, send an icmp destination unreachable*/
 	if (next_route == NULL) {
 		icmp(eth_hdr, ip_packet, 3, interface);
 		return;
 	}
+
 	uint8_t mac[6];
 	get_interface_mac(next_route->interface, mac);	
 	// struct arp_entry *next_hop = get_arp_entry(next_route->next_hop);
@@ -203,6 +216,7 @@ void ippacket(struct iphdr *ip_packet, struct ether_header *eth_hdr, char* buf, 
 	icmp_hdr->checksum = htons(checksum((uint16_t*)icmp_hdr, sizeof(struct icmphdr)));
 
 	struct arp_entry *next_hop = get_arp_cache(next_route->next_hop);
+	/*if the next hop is not in the arp table, send an arp request*/
 	if(next_hop == NULL)
 		{
 			struct package *package = malloc(sizeof(struct package));
@@ -215,6 +229,7 @@ void ippacket(struct iphdr *ip_packet, struct ether_header *eth_hdr, char* buf, 
 			arprequest(next_route, interface);
 			return;
 		}
+	/*if the next hop is in the arp table, forward the packet*/
 	else
 	{
 		memcpy(eth_hdr->ether_dhost, next_hop->mac, 6);
@@ -231,9 +246,10 @@ void ippacket(struct iphdr *ip_packet, struct ether_header *eth_hdr, char* buf, 
 	}
 }
 
+/*parses arp packets*/
 void arppacket(struct arp_header *arp_packet, struct ether_header *eth_hdr, int interface){
 	
-	//request
+	/*if the arp packet is an arp request, send an arp reply*/
 	if(ntohs(arp_packet->op) == 1){
 		struct arp_header *arp_reply = malloc(sizeof(struct arp_header));
 		arp_reply->htype = htons(0x0001);
@@ -256,7 +272,7 @@ void arppacket(struct arp_header *arp_packet, struct ether_header *eth_hdr, int 
 		memcpy(buf + sizeof(struct ether_header), arp_reply, sizeof(struct arp_header));
 		send_to_link(interface, buf, sizeof(struct ether_header) + sizeof(struct arp_header));
 	}
-	//reply
+	/*if the arp packet is an arp reply, add the entry to the arp table*/
 	else if(ntohs(arp_packet->op) == 2){
 		
 		struct arp_entry *arp_entry = malloc(sizeof(struct arp_entry));
@@ -264,6 +280,7 @@ void arppacket(struct arp_header *arp_packet, struct ether_header *eth_hdr, int 
 		memcpy(arp_entry->mac, arp_packet->sha, 6);
 		memcpy(&arp_cache[arp_cache_size], arp_entry, sizeof(struct arp_entry));
 		arp_cache_size++;
+		/*if there are packets waiting for this arp reply, send them*/
 		while(!queue_empty(package_queue)){
 			struct package *package = queue_deq(package_queue);
 			struct ether_header *eth_hdr = malloc(sizeof(struct ether_header));
@@ -273,6 +290,7 @@ void arppacket(struct arp_header *arp_packet, struct ether_header *eth_hdr, int 
 			struct route_table_entry *next_route = malloc(sizeof(struct route_table_entry));
 			memcpy(next_route, package->payload + sizeof(struct ether_header) + sizeof(struct iphdr), sizeof(struct route_table_entry));
 			struct arp_entry *next_hop = get_arp_cache(next_route->next_hop);
+			/*if we didn't receive a reply for "next_hop" yet, put the packet back in the queue*/
 			if(next_hop == NULL){
 				queue_enq(backup_queue, package);
 				continue;
@@ -290,6 +308,7 @@ void arppacket(struct arp_header *arp_packet, struct ether_header *eth_hdr, int 
 			send_to_link(next_route->interface, buf, sizeof(struct ether_header) + sizeof(struct iphdr));
 		
 		}
+		/*swap the queues*/
 		queue aux = package_queue;
 		package_queue = backup_queue;
 		backup_queue = aux;
@@ -327,13 +346,15 @@ int main(int argc, char *argv[])
 		any header field which has more than 1 byte will need to be conerted to
 		host order. For example, ntohs(eth_hdr->ether_type). The oposite is needed when
 		sending a packet on the link, */
+
+		/*if the packet is an ip packet, send it to the ippacket function*/
 		if( ntohs(eth_hdr->ether_type) == 0x0800 ){
 			struct iphdr *ip_packet = (struct iphdr*) (buf + sizeof(struct ether_header));
 			printf("A intrat pe aici(ip).\n");
 			ippacket(ip_packet, eth_hdr, buf, interface);			
 			printf("Received ip packet from ip address %d.%d.%d.%d\n", (ip_packet->saddr >> 24) & 0xff, (ip_packet->saddr >> 16) & 0xff, (ip_packet->saddr >> 8) & 0xff, ip_packet->saddr & 0xff);
 		}
-
+		/*if the packet is an arp packet, send it to the arppacket function*/
 		else if( ntohs(eth_hdr->ether_type) == 0x0806 ){
 			struct arp_header *arp_packet = (struct arp_header*) (buf + sizeof(struct ether_header));
 			arppacket(arp_packet, eth_hdr, interface);
