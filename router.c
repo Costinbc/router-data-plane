@@ -136,7 +136,6 @@ void arprequest(struct route_table_entry *next_route, int interface){
 	struct ether_header *eth_hdr = malloc(sizeof(struct ether_header));
 	eth_hdr->ether_type = htons(0x0806);
 	get_interface_mac(next_route->interface, eth_hdr->ether_shost);
-	// memcpy(eth_hdr->ether_shost, eth_hdr_prev->ether_dhost, 6);
 	memset(eth_hdr->ether_dhost, 0xff, 6);
 
 	struct arp_header *arp_hdr = malloc(sizeof(struct arp_header));
@@ -146,12 +145,10 @@ void arprequest(struct route_table_entry *next_route, int interface){
 	arp_hdr->plen = 4;
 	arp_hdr->op = htons(0x0001);
 	get_interface_mac(next_route->interface, arp_hdr->sha);
-	///maybe not change spa and sha
 	uint32_t ip ;
 	ip = inet_addr(get_interface_ip(next_route->interface));
 	arp_hdr->spa = ip;
 	
-	// memcpy(arp_hdr->sha, eth_hdr_prev->ether_dhost, 6);
 	memset(arp_hdr->tha, 0, 6);
 	arp_hdr->tpa = next_route->next_hop;
 	memcpy(buffer, eth_hdr, sizeof(struct ether_header));
